@@ -28,6 +28,9 @@ class CO2mini
   def initialize(key = [0x86, 0x41, 0xc9, 0xa8, 0x7f, 0x41, 0x3c, 0xac])
     @key      = key
     @handlers = {}
+    @device = HidApi.open(0x4d9, 0xa052)
+    @device.send_feature_report([0x00] + @key)
+    ObjectSpace.define_finalizer(self) { @device.close }
   end
 
   def on(event, &block)
@@ -37,11 +40,29 @@ class CO2mini
     @handlers[event] = block
   end
 
-  def loop
-    @device = HidApi.open(0x4d9, 0xa052)
-    ObjectSpace.define_finalizer(self) { @device.close }
+  def read_once(read_type)
+    while true do
+      buf = @device.read(8)
+      res = buf.get_array_of_uint8(0, 8)
+      decrypted = _decrypt(@key, res)
 
-    @device.send_feature_report([0x00] + @key)
+      if decrypted[4] != 0x0d or (decrypted[0..2].inject(:+) & 0xff) != decrypted[3]
+        warn "Checksum error #{_hex(data).inspect} => #{_hex(decrypted).inspect}"
+      else
+        op = decrypted[0]
+        val = decrypted[1] << 8 | decrypted[2]
+
+        case op
+        when @@events[:co2] then
+          return val if read_type == :co2
+        when @@events[:temp] then           
+          return val / 16.0 - 273.15 if read_type == :temp
+        end
+      end
+    end
+  end
+
+  def loop
     while true do
       buf = @device.read(8)
       res = buf.get_array_of_uint8(0, 8)
